@@ -45,7 +45,7 @@ print_help(){
     echo "           32.3kB  1049kB  1016kB            Free Space"
     echo "   1       1049kB  12.2GB  12.2GB  primary   ext4         boot"
     echo "   2       12.2GB  32.2GB  20.0GB  extended"
-    echo "   5       12.2GB  32.2GB  20.0GB  logical   ext4" 
+    echo "   5       12.2GB  32.2GB  20.0GB  logical   ext4"
 }
 
 get_device_type(){
@@ -69,10 +69,10 @@ ensure_device_not_mounted() {
     local devices_to_check
     device_type=$(get_device_type "$device")
     if [[ $device_type == "lvm" ]]; then
-        # It's an LVM block device 
+        # It's an LVM block device
         # Capture the LV device names. Since we'll have to shift the partition, we need to make sure all LVs are not mounted in the adjacent partition.
         devices_to_check=$(/usr/sbin/lvm pvdisplay "$device" -m |/usr/bin/grep "Logical volume" |/usr/bin/awk '{print $3}')
-    else 
+    else
         # Use the device and partition number instead
         devices_to_check=$device
     fi
@@ -93,7 +93,7 @@ validate_device_name() {
         print_help
         exit 1
     fi
-    if [[ ! -e "$DEVICE_NAME" ]]; then 
+    if [[ ! -e "$DEVICE_NAME" ]]; then
         echo "Device $DEVICE_NAME not found"
         print_help
         exit 1
@@ -281,7 +281,7 @@ check_available_free_space(){
         # there is not enough free space after the adjacent partition, calculate how much extra space is needed
         # to be fred from the PV
         local volume_group_name
-        volume_group_name=$(get_volume_group_name)        
+        volume_group_name=$(get_volume_group_name)
         pe_size_in_bytes=$(/usr/sbin/lvm pvdisplay "$device" --units b| /usr/bin/awk 'index($0,"PE Size") {print $3}')
         unusable_space_in_pv_in_bytes=$(/usr/sbin/lvm pvdisplay --units B "$device" | /usr/bin/awk 'index($0,"not usable") {print $(NF-1)}'|/usr/bin/numfmt --from=iec)
         total_pe_count_in_vg=$(/usr/sbin/lvm vgs "$volume_group_name" -o pv_pe_count --noheadings)
@@ -300,7 +300,7 @@ resolve_device_name(){
     local device=$DEVICE_NAME$ADJACENT_PARTITION_NUMBER
     device_type=$(get_device_type "$device")
     if [[ $device_type == "lvm" ]]; then
-        # It's an LVM block device 
+        # It's an LVM block device
         # Determine which is the last LV in the PV
         # shellcheck disable=SC2016
         device=$(/usr/sbin/lvm pvdisplay "$device" -m | /usr/bin/sed  -n '/Logical volume/h; ${x;p;}' | /usr/bin/awk  '{print $3}')
@@ -326,7 +326,7 @@ evict_end_PV() {
     local shrinking_start_PE=$1
     ret=$(/usr/sbin/lvm pvmove --alloc anywhere "$device":"$shrinking_start_PE"-  2>&1)
     status=$?
-    if [[ $status -ne 0 ]]; then        
+    if [[ $status -ne 0 ]]; then
         echo "Failed to move PEs in PV $LOGICAL_VOLUME_DEVICE_NAME: $ret"
         exit $status
     fi
@@ -338,11 +338,11 @@ shrink_physical_volume() {
     pe_size_in_bytes=$(/usr/sbin/lvm pvdisplay "$device" --units b| /usr/bin/awk 'index($0,"PE Size") {print $3}')
     unusable_space_in_pv_in_bytes=$(/usr/sbin/lvm pvdisplay --units B "$device" | /usr/bin/awk 'index($0,"not usable") {print $(NF-1)}'|/usr/bin/numfmt --from=iec)
 
-    total_pe_count=$(/usr/sbin/lvm pvs "$device" -o pv_pe_count --noheadings | /usr/bin/sed 's/^[[:space:]]*//g') 
+    total_pe_count=$(/usr/sbin/lvm pvs "$device" -o pv_pe_count --noheadings | /usr/bin/sed 's/^[[:space:]]*//g')
     evict_size_in_PE=$((SHRINK_SIZE_IN_BYTES/pe_size_in_bytes))
     shrink_start_PE=$((total_pe_count - evict_size_in_PE))
     pv_new_size_in_bytes=$(( (shrink_start_PE*pe_size_in_bytes) + unusable_space_in_pv_in_bytes ))
-    
+
     ret=$(/usr/sbin/lvm pvresize --setphysicalvolumesize "$pv_new_size_in_bytes"B -t "$device" -y 2>&1)
     status=$?
     if [[ $status -ne 0 ]]; then
@@ -350,7 +350,7 @@ shrink_physical_volume() {
             # ERRNO 5 is equivalent to command failed: https://github.com/lvmteam/lvm2/blob/2eb34edeba8ffc9e22b6533e9cb20e0b5e93606b/tools/errors.h#L23
             # Try to recover by evicting the ending PEs elsewhere in the PV, in case it's a failure due to ending PE's being inside the shrinking area.
             evict_end_PV $shrink_start_PE
-        else 
+        else
             echo "Failed to resize PV $device: $ret"
             exit $status
         fi
@@ -360,7 +360,7 @@ shrink_physical_volume() {
     status=$?
     if [[ $status -ne 0 ]]; then
             echo "Failed to resize PV $device during retry: $ret"
-            exit $status  
+            exit $status
     fi
     check_filesystem "$LOGICAL_VOLUME_DEVICE_NAME"
 }
@@ -399,7 +399,7 @@ shrink_adjacent_partition(){
     local device_type
     device_type=$(get_device_type "$DEVICE_NAME""$ADJACENT_PARTITION_NUMBER")
     if [[ "$device_type" == "lvm" ]]; then
-        shrink_physical_volume 
+        shrink_physical_volume
     fi
     shrink_partition "$ADJACENT_PARTITION_NUMBER"
     if [[ -n "$EXTENDED_PARTITION_NUMBER" ]]; then
@@ -481,12 +481,12 @@ increase_boot_partition() {
         /usr/bin/umount "$device"
     else
         echo "Device $device does not contain an ext4 or xfs file system: $BOOT_FS_TYPE"
-        return 
+        return
     fi
         status=$?
     if [[ $status -ne 0 ]]; then
         echo "Failed to resize boot partition '$device': $ret"
-        return 
+        return
     fi
     echo "Boot file system increased to $new_fs_size_in_blocks blocks" >&2
 }
