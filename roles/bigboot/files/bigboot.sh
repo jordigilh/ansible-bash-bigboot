@@ -3,11 +3,11 @@
 # Command parameters
 INCREMENT_BOOT_PARTITION_SIZE=
 DEVICE_NAME=
+BOOT_PARTITION_NUMBER=
+PARTITION_PREFIX=
 
 # Script parameters
-BOOT_PARTITION_NUMBER=
 ADJACENT_PARTITION_NUMBER=
-BOOT_PARTITION_FLAG="boot"
 BOOT_FS_TYPE=
 EXTENDED_PARTITION_TYPE=extended
 LOGICAL_VOLUME_DEVICE_NAME=
@@ -86,31 +86,30 @@ ensure_device_not_mounted() {
     done
 }
 
-validate_device_name() {
-    DEVICE_NAME="$1"
-    if [[ -z "$DEVICE_NAME" ]]; then
+validate_device() {
+    local device=$1
+    if [[ -z "${device}" ]]; then
         echo "Missing device name"
         print_help
         exit 1
     fi
-    if [[ ! -e "$DEVICE_NAME" ]]; then
-        echo "Device $DEVICE_NAME not found"
+    if [[ ! -e "${device}" ]]; then
+        echo "Device ${device} not found"
         print_help
         exit 1
     fi
-    ret=$(/usr/sbin/fdisk -l "$DEVICE_NAME" 2>&1)
+    ret=$(/usr/sbin/fdisk -l "${device}" 2>&1)
     status=$?
     if [[ $status -ne 0 ]]; then
-        echo "Failed to open device $DEVICE_NAME: $ret"
+        echo "Failed to open device ${device}: $ret"
         exit 1
     fi
 }
 
 validate_increment_partition_size() {
-    INCREMENT_BOOT_PARTITION_SIZE="$1"
     if [[ -z "$INCREMENT_BOOT_PARTITION_SIZE" ]]; then
         echo "Missing incremental size for boot partition"
-        print help
+        print_help
         exit 1
     fi
     ret=$(/usr/bin/numfmt --from=iec "$INCREMENT_BOOT_PARTITION_SIZE" 2>&1)
@@ -122,15 +121,53 @@ validate_increment_partition_size() {
     INCREMENT_BOOT_PARTITION_SIZE_IN_BYTES=$ret
 }
 
-# capture and validate the device name that holds the partition
-# capture and validate amount of space to increase for boot
+# Capture all parameters:
+# Mandatory: Device, Size and Boot Partition Number
+# Optional: Parition Prefix (e.g. "p" for nvme based volumes)
 parse_flags() {
-    if [[ -z $1 ]] && [[ -z $2 ]]; then
+    for i in "$@"
+        do
+        case $i in
+            -d=*|--device=*)
+            DEVICE_NAME=(${i#*=})
+            ;;
+            -s=*|--size=*)
+            INCREMENT_BOOT_PARTITION_SIZE=(${i#*=})
+            ;;
+            -b=*|--boot=*)
+            BOOT_PARTITION_NUMBER=(${i#*=})
+            ;;
+            -p=*|--prefix=*)
+            PARTITION_PREFIX=(${i#*=})
+            ;;
+            -h)
+            print_help
+            exit 0
+            ;;
+            *)
+            # unknown option
+            echo "Unknown flag $i"
+            print_help
+            exit 1
+            ;;
+        esac
+    done
+}
+
+validate_parameters() {
+    validate_device "${DEVICE_NAME}"
+    validate_increment_partition_size
+
+    # Make sure BOOT_PARTITION_NUMBER is set to avoid passing only DEVICE_NAME
+    if [[ -z "$BOOT_PARTITION_NUMBER" ]]; then
+        echo "Boot partition number was not set"
         print_help
         exit 1
     fi
-    validate_device_name "$1"
-    validate_increment_partition_size "$2"
+    validate_device "${DEVICE_NAME}${PARTITION_PREFIX}${BOOT_PARTITION_NUMBER}"
+
+    ensure_device_not_mounted "${DEVICE_NAME}${PARTITION_PREFIX}${BOOT_PARTITION_NUMBER}"
+    ensure_extendable_fs_type "${DEVICE_NAME}${PARTITION_PREFIX}${BOOT_PARTITION_NUMBER}"
 }
 
 get_fs_type(){
@@ -153,26 +190,6 @@ ensure_extendable_fs_type(){
     BOOT_FS_TYPE=$ret
 }
 
-get_boot_partition_number() {
-    BOOT_PARTITION_NUMBER=$(/usr/sbin/parted -m "$DEVICE_NAME" print  | /usr/bin/sed -n '/^[0-9]*:/p'| /usr/bin/sed -n '/'$BOOT_PARTITION_FLAG'/p'| /usr/bin/awk -F':' '{print $1}')
-    status=$?
-    if [[ $status -ne 0 ]]; then
-        echo "Unable to identify boot partition number for '$DEVICE_NAME': $BOOT_PARTITION_NUMBER"
-        exit 1
-    fi
-    if [[ "$(/usr/bin/wc -l <<<"$BOOT_PARTITION_NUMBER")" -ne "1" ]]; then
-        echo "Found multiple partitions with the boot flag enabled for device $DEVICE_NAME"
-        exit 1
-    fi
-    if ! [[ "$BOOT_PARTITION_NUMBER" == +([[:digit:]]) ]]; then
-        echo "Invalid boot partition number '$BOOT_PARTITION_NUMBER'"
-        exit 1
-    fi
-    ensure_device_not_mounted "$DEVICE_NAME""$BOOT_PARTITION_NUMBER"
-    ensure_extendable_fs_type "$DEVICE_NAME""$BOOT_PARTITION_NUMBER"
-}
-
-
 get_successive_partition_number() {
     boot_line_number=$(/usr/sbin/parted -m "$DEVICE_NAME" print |/usr/bin/sed -n '/^'"$BOOT_PARTITION_NUMBER"':/ {=}')
     status=$?
@@ -191,18 +208,18 @@ get_successive_partition_number() {
       ADJACENT_PARTITION_NUMBER=$(/usr/sbin/parted "$DEVICE_NAME" print |grep -v "^$" |awk 'END{print$1}')
     else
         # get the partition number from the next line after the boot partition
-        ADJACENT_PARTITION_NUMBER=$(/usr/sbin/parted "$DEVICE_NAME" print | /usr/bin/awk '/'"$BOOT_PARTITION_FLAG"'/{getline;print $1}')
+        ADJACENT_PARTITION_NUMBER=$(/usr/sbin/parted -m "$DEVICE_NAME" print | /usr/bin/awk -F ':' '/'"^$BOOT_PARTITION_NUMBER:"'/{getline;print $1}')
     fi
     if ! [[ $ADJACENT_PARTITION_NUMBER == +([[:digit:]]) ]]; then
         echo "Invalid successive partition number '$ADJACENT_PARTITION_NUMBER'"
         exit 1
     fi
-    ensure_device_not_mounted "$DEVICE_NAME""$ADJACENT_PARTITION_NUMBER"
+    ensure_device_not_mounted "${DEVICE_NAME}${PARTITION_PREFIX}${ADJACENT_PARTITION_NUMBER}"
 }
 
 init_variables(){
-    parse_flags "$1" "$2"
-    get_boot_partition_number
+    parse_flags "$@"
+    validate_parameters
     get_successive_partition_number
 }
 
@@ -245,7 +262,7 @@ get_free_device_size() {
 
 get_volume_group_name(){
     local volume_group_name
-    ret=$(/usr/sbin/lvm pvs "$DEVICE_NAME""$ADJACENT_PARTITION_NUMBER" -o vg_name --noheadings|/usr/bin/sed 's/^[[:space:]]*//g')
+    ret=$(/usr/sbin/lvm pvs "${DEVICE_NAME}${PARTITION_PREFIX}${ADJACENT_PARTITION_NUMBER}" -o vg_name --noheadings|/usr/bin/sed 's/^[[:space:]]*//g')
     status=$?
     if [[ $status -ne 0 ]]; then
         echo "Failed to retrieve volume group name for logical volume $LOGICAL_VOLUME_DEVICE_NAME: $ret"
@@ -268,7 +285,7 @@ deactivate_volume_group(){
 }
 
 check_available_free_space(){
-    local device=$DEVICE_NAME$ADJACENT_PARTITION_NUMBER
+    local device="${DEVICE_NAME}${PARTITION_PREFIX}${ADJACENT_PARTITION_NUMBER}"
     free_device_space_in_bytes=$(get_free_device_size)
     # if there is enough free space after the adjacent partition, there is no need to shrink it.
     if [[ $free_device_space_in_bytes -gt $INCREMENT_BOOT_PARTITION_SIZE_IN_BYTES ]]; then
@@ -276,7 +293,7 @@ check_available_free_space(){
         return
     fi
     SHRINK_SIZE_IN_BYTES=$((INCREMENT_BOOT_PARTITION_SIZE_IN_BYTES-free_device_space_in_bytes))
-    device_type=$(get_device_type "$DEVICE_NAME""$ADJACENT_PARTITION_NUMBER")
+    device_type=$(get_device_type "${DEVICE_NAME}${PARTITION_PREFIX}${ADJACENT_PARTITION_NUMBER}")
     if [[ "$device_type" == "lvm" ]]; then
         # there is not enough free space after the adjacent partition, calculate how much extra space is needed
         # to be fred from the PV
@@ -297,7 +314,7 @@ check_available_free_space(){
 }
 
 resolve_device_name(){
-    local device=$DEVICE_NAME$ADJACENT_PARTITION_NUMBER
+    local device="${DEVICE_NAME}${PARTITION_PREFIX}${ADJACENT_PARTITION_NUMBER}"
     device_type=$(get_device_type "$device")
     if [[ $device_type == "lvm" ]]; then
         # It's an LVM block device
@@ -315,14 +332,14 @@ resolve_device_name(){
 }
 
 check_device(){
-    local device=$DEVICE_NAME$ADJACENT_PARTITION_NUMBER
+    local device="${DEVICE_NAME}${PARTITION_PREFIX}${ADJACENT_PARTITION_NUMBER}"
     resolve_device_name
     ensure_device_not_mounted "$device"
     check_available_free_space
 }
 
 evict_end_PV() {
-    local device=$DEVICE_NAME$ADJACENT_PARTITION_NUMBER
+    local device="${DEVICE_NAME}${PARTITION_PREFIX}${ADJACENT_PARTITION_NUMBER}"
     local shrinking_start_PE=$1
     ret=$(/usr/sbin/lvm pvmove --alloc anywhere "$device":"$shrinking_start_PE"-  2>&1)
     status=$?
@@ -334,7 +351,7 @@ evict_end_PV() {
 }
 
 shrink_physical_volume() {
-    local device=$DEVICE_NAME$ADJACENT_PARTITION_NUMBER
+    local device="${DEVICE_NAME}${PARTITION_PREFIX}${ADJACENT_PARTITION_NUMBER}"
     pe_size_in_bytes=$(/usr/sbin/lvm pvdisplay "$device" --units b| /usr/bin/awk 'index($0,"PE Size") {print $3}')
     unusable_space_in_pv_in_bytes=$(/usr/sbin/lvm pvdisplay --units B "$device" | /usr/bin/awk 'index($0,"not usable") {print $(NF-1)}'|/usr/bin/numfmt --from=iec)
 
@@ -367,7 +384,7 @@ shrink_physical_volume() {
 
 calculate_new_end_partition_size_in_bytes(){
     local partition_number=$1
-    local device=$DEVICE_NAME$partition_number
+    local device="${DEVICE_NAME}${PARTITION_PREFIX}${partition_number}"
     current_partition_size_in_bytes=$(/usr/sbin/parted -m "$DEVICE_NAME" unit b print| /usr/bin/awk '/^'"$partition_number"':/ {split($0,value,":"); print value[3]}'| /usr/bin/sed -e's/B//g')
     status=$?
     if [[ $status -ne 0 ]]; then
@@ -397,7 +414,7 @@ shrink_adjacent_partition(){
         return 0
     fi
     local device_type
-    device_type=$(get_device_type "$DEVICE_NAME""$ADJACENT_PARTITION_NUMBER")
+    device_type=$(get_device_type "${DEVICE_NAME}${PARTITION_PREFIX}${ADJACENT_PARTITION_NUMBER}")
     if [[ "$device_type" == "lvm" ]]; then
         shrink_physical_volume
     fi
@@ -427,7 +444,7 @@ shift_adjacent_partition() {
 
 update_kernel_partition_tables(){
     # Ensure no size inconsistencies between PV and partition
-    local device=$DEVICE_NAME$ADJACENT_PARTITION_NUMBER
+    local device="${DEVICE_NAME}${PARTITION_PREFIX}${ADJACENT_PARTITION_NUMBER}"
     device_type=$(get_device_type "$device")
     if [[ $device_type == "lvm" ]]; then
         ret=$(/usr/sbin/lvm pvresize "$device" -y 2>&1)
@@ -447,7 +464,7 @@ update_kernel_partition_tables(){
 }
 
 increase_boot_partition() {
-    local device=$DEVICE_NAME$BOOT_PARTITION_NUMBER
+    local device="${DEVICE_NAME}${PARTITION_PREFIX}${BOOT_PARTITION_NUMBER}"
     local new_fs_size_in_blocks=
     echo "Increasing boot partition $BOOT_PARTITION_NUMBER in $DEVICE_NAME by $INCREMENT_BOOT_PARTITION_SIZE" >&2
     ret=$(echo "- +"| /usr/sbin/sfdisk "$DEVICE_NAME" -N "$BOOT_PARTITION_NUMBER" --no-reread --force 2>&1)
@@ -492,7 +509,7 @@ increase_boot_partition() {
 }
 
 activate_volume_group(){
-    local device=$DEVICE_NAME$ADJACENT_PARTITION_NUMBER
+    local device="${DEVICE_NAME}${PARTITION_PREFIX}${ADJACENT_PARTITION_NUMBER}"
     local volume_group_name
     volume_group_name=$(get_volume_group_name)
     ret=$(/usr/sbin/lvm vgchange -ay "$volume_group_name" 2>&1)
@@ -508,11 +525,11 @@ activate_volume_group(){
 # last steps are to run the fsck on boot partition and activate the volume gruop if necessary
 cleanup(){
     # run a file system check to the boot file system
-    check_filesystem "$DEVICE_NAME""$BOOT_PARTITION_NUMBER"
+    check_filesystem "${DEVICE_NAME}${PARTITION_PREFIX}${BOOT_PARTITION_NUMBER}"
 }
 
 main() {
-    init_variables "$1" "$2"
+    init_variables "$@"
     check_device
     shrink_adjacent_partition
     shift_adjacent_partition
