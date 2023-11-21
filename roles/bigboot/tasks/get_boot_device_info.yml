@@ -14,5 +14,7 @@
 
 - name: Capture boot device details
   ansible.builtin.set_fact:
+    boot_device_partition_prefix: "{{ _boot_partition_name[(_boot_disk | length):-1] }}"
+    boot_partition_number: "{{ _boot_partition_name[-1] }}"
     boot_device_name: "/dev/{{ _boot_disk }}"
     boot_device_original_size: "{{ _boot_mount_entry.size_total | int }}"

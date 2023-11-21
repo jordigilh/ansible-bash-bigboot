@@ -17,7 +17,7 @@ main() {
     start=$(/usr/bin/date +%s)
     disable_lvm_lock
     # run bigboot.sh to increase boot partition and file system size
-    ret=$(sh /usr/bin/bigboot.sh "{{ boot_device_name }}" "{{ bigboot_size }}" 2>/dev/kmsg)
+    ret=$(sh /usr/bin/bigboot.sh -d="{{ boot_device_name }}" -s="{{ bigboot_size }}" -b="{{ boot_partition_number }}" -p="{{ boot_device_partition_prefix }}" 2>/dev/kmsg)
     status=$?
     end=$(/usr/bin/date +%s)
     # write the log file
