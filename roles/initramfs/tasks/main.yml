@@ -24,6 +24,7 @@
 - name: Reboot the server
   ansible.builtin.reboot:
     post_reboot_delay: "{{ initramfs_post_reboot_delay }}"
+    reboot_timeout: "{{ initramfs_reboot_timeout }}"
 
 - name: Restore previous initramfs
   ansible.builtin.copy:
